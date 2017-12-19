@@ -92,13 +92,6 @@ type VectorSeparateFunction func([]*packet.Packet, []bool, uint, UserContext)
 // set after "Split" function in it.
 type SplitFunction func(*packet.Packet, UserContext) uint
 
-// Kni is a high level struct of KNI device. The device itself is stored
-// in C memory in low.c and is defined by its port which is equal to port
-// in this structure
-type Kni struct {
-	port uint8
-}
-
 type receiveParameters struct {
 	out   *low.Ring
 	queue int16
@@ -112,6 +105,26 @@ func makeReceiver(port uint8, queue int16, out *low.Ring) *scheduler.FlowFunctio
 	par.out = out
 	ffCount++
 	return schedState.NewUnclonableFlowFunction("receiver", ffCount, receive, par)
+}
+
+// Kni is a high level struct of KNI device. The device itself is stored
+// in C memory in low.c and is defined by its port which is equal to port
+// in this structure
+type Kni struct {
+	port uint8
+}
+
+type kniReceiveParameters struct {
+	out  *low.Ring
+	port uint8
+}
+
+func makeKNIReceiver(kni *Kni, out *low.Ring) *scheduler.FlowFunction {
+	par := new(kniReceiveParameters)
+	par.port = kni.port
+	par.out = out
+	ffCount++
+	return schedState.NewUnclonableFlowFunction("kniReceiver", ffCount, kniReceive, par)
 }
 
 type generateParameters struct {
@@ -154,6 +167,19 @@ func makeSender(port uint8, queue int16, in *low.Ring) *scheduler.FlowFunction {
 	par.in = in
 	ffCount++
 	return schedState.NewUnclonableFlowFunction("sender", ffCount, send, par)
+}
+
+type kniSendParameters struct {
+	in   *low.Ring
+	port uint8
+}
+
+func makeKNISender(kni *Kni, in *low.Ring) *scheduler.FlowFunction {
+	par := new(sendParameters)
+	par.port = kni.port
+	par.in = in
+	ffCount++
+	return schedState.NewUnclonableFlowFunction("kniSender", ffCount, kniSend, par)
 }
 
 type copyParameters struct {
@@ -510,23 +536,30 @@ func SetReader(filename string, repcount int32) (OUT *Flow) {
 // Receive queue will be added to port automatically.
 // Returns new opened flow with received packets
 // Function can panic during execution.
-func SetReceiver(par interface{}) (OUT *Flow) {
-	ring := low.CreateRing(generateRingName(), burstSize*sizeMultiplier)
-	var recv *scheduler.FlowFunction
-	if port, t := par.(uint8); t {
-		if port >= uint8(len(createdPorts)) {
-			common.LogError(common.Initialization, "Requested receive port exceeds number of ports which can be used by DPDK (bind to DPDK).")
-		}
-		createdPorts[port].config = autoPort
-		createdPorts[port].rxQueues = append(createdPorts[port].rxQueues, true)
-		recv = makeReceiver(port, createdPorts[port].rxQueuesNumber, ring)
-		createdPorts[port].rxQueuesNumber++
-	} else if tkni, t := par.(*Kni); t {
-		// Receive with "-1" queue will be from KNI device
-		recv = makeReceiver(tkni.port, -1, ring)
-	} else {
-		common.LogError(common.Initialization, "SetReceiver parameter should be ether number of port or created KNI device")
+func SetReceiver(port uint8) (OUT *Flow) {
+	if port >= uint8(len(createdPorts)) {
+		common.LogError(common.Initialization, "Requested receive port exceeds number of ports which can be used by DPDK (bind to DPDK).")
 	}
+	createdPorts[port].config = autoPort
+	createdPorts[port].rxQueues = append(createdPorts[port].rxQueues, true)
+	ring := low.CreateRing(generateRingName(), burstSize*sizeMultiplier)
+	knirecv := makeReceiver(port, createdPorts[port].rxQueuesNumber, ring)
+	schedState.UnClonable = append(schedState.UnClonable, knirecv)
+	OUT = new(Flow)
+	OUT.current = ring
+	openFlowsNumber++
+	createdPorts[port].rxQueuesNumber++
+	return OUT
+}
+
+// SetKNIReceiver adds kniReceive function to flow graph.
+// Gets KNI device from which packets will be received.
+// Receive queue will be added to port automatically.
+// Returns new opened flow with received packets
+// Function can panic during execution.
+func SetKNIReceiver(kni *Kni) (OUT *Flow) {
+	ring := low.CreateRing(generateRingName(), burstSize*sizeMultiplier)
+	recv := makeKNIReceiver(kni, ring)
 	schedState.UnClonable = append(schedState.UnClonable, recv)
 	OUT = new(Flow)
 	OUT.current = ring
@@ -571,24 +604,28 @@ func SetGenerator(generateFunction interface{}, targetSpeed uint64, context User
 // Gets flow which will be closed and its packets will be send and port number for which packets will be sent.
 // Send queue will be added to port automatically.
 // Function can panic during execution.
-func SetSender(IN *Flow, par interface{}) {
+func SetSender(IN *Flow, port uint8) {
 	checkFlow(IN)
-	var send *scheduler.FlowFunction
-	if port, t := par.(uint8); t {
-		if port >= uint8(len(createdPorts)) {
-			common.LogError(common.Initialization, "Requested send port exceeds number of ports which can be used by DPDK (bind to DPDK).")
-		}
-		createdPorts[port].config = autoPort
-		createdPorts[port].txQueues = append(createdPorts[port].txQueues, true)
-		send = makeSender(port, createdPorts[port].txQueuesNumber, IN.current)
-		createdPorts[port].txQueuesNumber++
-	} else if tkni, t := par.(*Kni); t {
-		// Send for "-1" queue will be to KNI device
-		send = makeSender(tkni.port, -1, IN.current)
-	} else {
-		common.LogError(common.Initialization, "SetSender parameter should be ether number of port or created KNI device")
+	if port >= uint8(len(createdPorts)) {
+		common.LogError(common.Initialization, "Requested send port exceeds number of ports which can be used by DPDK (bind to DPDK).")
 	}
+	createdPorts[port].config = autoPort
+	createdPorts[port].txQueues = append(createdPorts[port].txQueues, true)
+	send := makeSender(port, createdPorts[port].txQueuesNumber, IN.current)
+	createdPorts[port].txQueuesNumber++
 	schedState.UnClonable = append(schedState.UnClonable, send)
+	IN.current = nil
+	openFlowsNumber--
+}
+
+// SetKNISender adds kniSend function to flow graph.
+// Gets flow which will be closed and its packets will be send to given KNI device.
+// Send queue will be added to port automatically.
+// Function can panic during execution.
+func SetKNISender(IN *Flow, kni *Kni) {
+	checkFlow(IN)
+	kniSend := makeKNISender(kni, IN.current)
+	schedState.UnClonable = append(schedState.UnClonable, kniSend)
 	IN.current = nil
 	openFlowsNumber--
 }
@@ -747,6 +784,12 @@ func receive(parameters interface{}, coreID uint8) {
 	low.Receive(srp.port, srp.queue, srp.out, coreID)
 }
 
+func kniReceive(parameters interface{}, coreID uint8) {
+	srp := parameters.(*kniReceiveParameters)
+	// Receive with "-1" queue will be from KNI device
+	low.Receive(srp.port, -1, srp.out, coreID)
+}
+
 func generateOne(parameters interface{}, core uint8) {
 	gp := parameters.(*generateParameters)
 	OUT := gp.out
@@ -892,6 +935,12 @@ func pcopy(parameters interface{}, stopper chan int, report chan uint64, context
 func send(parameters interface{}, coreID uint8) {
 	srp := parameters.(*sendParameters)
 	low.Send(srp.port, srp.queue, srp.in, coreID)
+}
+
+func kniSend(parameters interface{}, coreID uint8) {
+	srp := parameters.(*kniSendParameters)
+	// Send with "-1" queue will be to KNI device
+	low.Send(srp.port, -1, srp.in, coreID)
 }
 
 func merge(from *low.Ring, to *low.Ring) {

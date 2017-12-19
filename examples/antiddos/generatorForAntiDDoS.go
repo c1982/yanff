@@ -72,8 +72,8 @@ func main() {
 
 	// Create first packet flow
 	outputFlow := flow.SetGenerator(generatePacket, speed, nil)
-	flow.SetSender(outputFlow, outPort)
-	inputFlow := flow.SetReceiver(inPort)
+	flow.SetSender(outputFlow, uint8(outPort))
+	inputFlow := flow.SetReceiver(uint8(inPort))
 	flow.SetHandler(inputFlow, checkInputFlow, nil)
 	flow.SetStopper(inputFlow)
 	go randomizeSize()

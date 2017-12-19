@@ -22,9 +22,9 @@ func main() {
 	kni := flow.CreateKniDevice(1, 20, "myKNI")
 
 	fromEthFlow := flow.SetReceiver(0)
-	flow.SetSender(fromEthFlow, kni)
+	flow.SetKNISender(fromEthFlow, kni)
 
-	fromKNIFlow := flow.SetReceiver(kni)
+	fromKNIFlow := flow.SetKNIReceiver(kni)
 	flow.SetSender(fromKNIFlow, 1)
 
 	flow.SystemStart()

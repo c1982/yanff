@@ -83,9 +83,9 @@ func main() {
 	}
 	flow.SystemInit(&config)
 
-	inputFlow := flow.SetReceiver(inPort)
+	inputFlow := flow.SetReceiver(uint8(inPort))
 	flow.SetHandler(inputFlow, handle, nil)
-	flow.SetSender(inputFlow, outPort)
+	flow.SetSender(inputFlow, uint8(outPort))
 	// Var isDdos is calculated in separate goroutine.
 	go calculateMetrics()
 	// Begin to process packets.
